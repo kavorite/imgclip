@@ -22,8 +22,8 @@ fn main() -> std::io::Result<()> {
     let sink = listener.sig();
     unsafe {
         loop {
-            if let Ok(u_msg) = sink.try_recv() {
-                if u_msg != WM_CLIPBOARDUPDATE {
+            if let Ok(msg) = sink.try_recv() {
+                if msg.msg != WM_CLIPBOARDUPDATE {
                     continue;
                 }
                 let mut clipboard = Clipboard::open()?;

@@ -1,6 +1,7 @@
 use crossbeam_channel::{Receiver, Sender};
 use std::os::windows::ffi::OsStrExt;
-use winapi::shared::minwindef::{ATOM, LRESULT, TRUE as WIN_TRUE};
+use std::time::Instant;
+use winapi::shared::minwindef::*;
 use winapi::shared::ntdef::HANDLE;
 use winapi::shared::windef::HWND;
 use winapi::shared::winerror::ERROR_SUCCESS;
@@ -86,7 +87,7 @@ pub(crate) struct Clipboard;
 
 impl Clipboard {
     pub unsafe fn open() -> std::io::Result<Self> {
-        if OpenClipboard(std::ptr::null_mut()) != WIN_TRUE {
+        if OpenClipboard(std::ptr::null_mut()) != TRUE {
             return Err(std::io::Error::last_os_error());
         }
 
@@ -111,7 +112,7 @@ impl Clipboard {
     }
 
     pub unsafe fn has_fmt(&self, fmt: u32) -> bool {
-        IsClipboardFormatAvailable(fmt) == WIN_TRUE
+        IsClipboardFormatAvailable(fmt) == TRUE
     }
 
     pub unsafe fn set(&mut self, fmt: u32, src: &[u8]) -> std::io::Result<()> {
@@ -124,7 +125,7 @@ impl Clipboard {
             let mut dst = GPtr::lock(hdl)?;
             std::ptr::copy(src.as_ptr(), dst.as_mut_ptr(), src.len());
         }
-        if EmptyClipboard() != WIN_TRUE {
+        if EmptyClipboard() != TRUE {
             GlobalFree(hdl);
             return Err(std::io::Error::last_os_error());
         }
@@ -163,9 +164,28 @@ pub(crate) struct WinMsgSink {
     pub hwnd: HWND,
 }
 
+pub(crate) struct WinMsgContent {
+    pub msg: UINT,
+    pub w_param: WPARAM,
+    pub l_param: LPARAM,
+    pub time: Instant,
+}
+
+impl WinMsgContent {
+    pub fn from(msg: u32, w_param: WPARAM, l_param: LPARAM) -> Self {
+        let time = Instant::now();
+        Self {
+            msg,
+            w_param,
+            l_param,
+            time,
+        }
+    }
+}
+
 struct WinMsgUpdates {
-    pub tx: Sender<u32>,
-    pub rx: Receiver<u32>,
+    pub tx: Sender<WinMsgContent>,
+    pub rx: Receiver<WinMsgContent>,
 }
 
 impl WinMsgUpdates {
@@ -179,9 +199,16 @@ lazy_static! {
     static ref MSG_UPDATES: WinMsgUpdates = WinMsgUpdates::new();
 }
 
-unsafe extern "system" fn wndproc(hwnd: HWND, u_msg: u32, arg1: usize, arg2: isize) -> LRESULT {
-    MSG_UPDATES.tx.send(u_msg);
-    DefWindowProcW(hwnd, u_msg, arg1, arg2)
+unsafe extern "system" fn wndproc(
+    hwnd: HWND,
+    u_msg: UINT,
+    w_param: WPARAM,
+    l_param: LPARAM,
+) -> LRESULT {
+    MSG_UPDATES
+        .tx
+        .send(WinMsgContent::from(u_msg, w_param, l_param));
+    DefWindowProcW(hwnd, u_msg, w_param, l_param)
 }
 
 struct WinClassRegistration {
@@ -248,7 +275,7 @@ impl WinMsgSink {
         if hwnd == std::ptr::null_mut() {
             return Err(std::io::Error::last_os_error());
         }
-        if AddClipboardFormatListener(hwnd) != WIN_TRUE {
+        if AddClipboardFormatListener(hwnd) != TRUE {
             return Err(std::io::Error::last_os_error());
         }
         Ok(Self { hwnd })
@@ -264,7 +291,7 @@ impl WinMsgSink {
         Ok(())
     }
 
-    pub fn sig(&self) -> Receiver<u32> {
+    pub fn sig(&self) -> Receiver<WinMsgContent> {
         MSG_UPDATES.rx.clone()
     }
 }
