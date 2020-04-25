@@ -41,38 +41,30 @@ impl BitsPPx {
 
 #[derive(Debug)]
 pub(crate) enum DIBFmt {
-    RGB,
     PNG,
     JPG,
-    Masked(Box<[RGBQUAD]>, BitsPPx),
+    RGB(Box<[RGBQUAD]>, BitsPPx),
+    Masked([RGBQUAD; 3], BitsPPx),
 }
 
 impl DIBFmt {
-    pub fn from(info: &BITMAPINFO) -> Option<Self> {
+    pub unsafe fn from(info: &BITMAPINFO) -> Option<Self> {
+        let bitc = info.bmiHeader.biBitCount;
         match info.bmiHeader.biCompression {
-            BI_RGB => Some(Self::RGB),
             BI_PNG => Some(Self::PNG),
             BI_JPEG => Some(Self::JPG),
-            BI_BITFIELDS => Some({
-                Self::Masked(
-                    Box::<_>::from(unsafe {
-                        let ptr = &info.bmiColors as *const RGBQUAD;
-                        let len = match info.bmiHeader.biBitCount {
-                            // if we have a palletized payload, suppose there are as many entries
-                            // as are specified for our palette
-                            1 | 4 | 8 => info.bmiHeader.biClrUsed,
-                            // 16- and 32-bpp bitmaps require three words to represent a red,
-                            // green, and blue bitmask respectively
-                            16 | 32 => 3,
-                            // this should never happen, but if it does we'll suppose the rest of
-                            // the color table is zero-length for safety's sake
-                            _ => 0,
-                        };
-                        std::slice::from_raw_parts(ptr, len as usize)
-                    }),
-                    BitsPPx::from(info.bmiHeader.biBitCount),
-                )
-            }),
+            BI_RGB if bitc == 1 || bitc == 4 || bitc == 8 => Some(Self::RGB(
+                Box::<_>::from({
+                    let ptr = &info.bmiColors as *const RGBQUAD;
+                    let len = info.bmiHeader.biClrUsed;
+                    std::slice::from_raw_parts(ptr, len as usize)
+                }),
+                BitsPPx::from(info.bmiHeader.biBitCount),
+            )),
+            BI_BITFIELDS if bitc == 16 || bitc == 32 => Some(Self::Masked(
+                *<*const _>::cast(&info.bmiColors),
+                BitsPPx::from(info.bmiHeader.biBitCount),
+            )),
             _ => None,
         }
     }
@@ -107,11 +99,10 @@ impl DIB {
             let info = lock.as_ref::<BITMAPINFO>();
             let fmt = DIBFmt::from(&info);
             let clrs = fmt
-                .and_then(|fmt| {
-                    if let DIBFmt::Masked(clrs, _) = fmt {
-                        return Some(clrs);
-                    }
-                    return None;
+                .and_then(|fmt| match fmt {
+                    DIBFmt::Masked(clrs, _) => Some(Box::<_>::from(clrs.as_ref())),
+                    DIBFmt::RGB(clrs, _) => Some(clrs),
+                    _ => None,
                 })
                 .and_then(|clrs| {
                     if clrs.len() == 0 {
