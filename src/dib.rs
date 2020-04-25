@@ -86,18 +86,18 @@ pub(crate) struct DIB {
 }
 
 impl DIB {
-    fn file_header(info: &BITMAPINFOHEADER) -> BITMAPFILEHEADER {
+    fn file_header(info: &BITMAPINFOHEADER, colorc: usize) -> BITMAPFILEHEADER {
         let offset = {
             std::mem::size_of::<BITMAPFILEHEADER>()
                 + std::mem::size_of::<BITMAPINFOHEADER>()
-                + (info.biClrUsed as usize) * std::mem::size_of::<RGBQUAD>()
+                + colorc * std::mem::size_of::<RGBQUAD>()
         } as u32;
         BITMAPFILEHEADER {
             bfType: 0x4D42, // 'BM'
             bfReserved1: 0,
             bfReserved2: 0,
             bfSize: info.biSizeImage + offset,
-            bfOffBits: offset as u32,
+            bfOffBits: offset,
         }
     }
 
@@ -119,7 +119,12 @@ impl DIB {
                     }
                     return Some(clrs);
                 });
-            let head = Self::file_header(&info.bmiHeader);
+            let colorc = if let Some(ref clrs) = clrs {
+                clrs.len()
+            } else {
+                0
+            };
+            let head = Self::file_header(&info.bmiHeader, colorc);
             let data = Box::<_>::from({
                 let ptr = (&info.bmiHeader as *const BITMAPINFOHEADER).offset(1) as *const u8;
                 let len = info.bmiHeader.biSizeImage as usize;
