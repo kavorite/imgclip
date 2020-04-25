@@ -2,20 +2,12 @@ use super::Clipboard;
 use winapi::um::wingdi::*;
 use winapi::um::winuser::*;
 
-#[derive(Copy, Clone, Debug)]
-pub(crate) struct RGBMask {
-    pub red: u8,
-    pub green: u8,
-    pub blue: u8,
-    reserved: u8,
-}
-
 #[derive(Debug, Copy, Clone)]
 pub(crate) enum BitsPPx {
     Binary,
     HalfByte,
     Byte,
-    HalfWord,
+    Short,
     Triplet,
     Word,
     Other(u16),
@@ -27,7 +19,7 @@ impl BitsPPx {
             1 => Self::Binary,
             4 => Self::HalfByte,
             8 => Self::Byte,
-            16 => Self::HalfWord,
+            16 => Self::Short,
             24 => Self::Triplet,
             32 => Self::Word,
             _ => Self::Other(n),
@@ -39,7 +31,7 @@ impl BitsPPx {
             Self::Binary => 1,
             Self::HalfByte => 4,
             Self::Byte => 8,
-            Self::HalfWord => 16,
+            Self::Short => 16,
             Self::Triplet => 24,
             Self::Word => 32,
             Self::Other(n) => n,
@@ -52,7 +44,7 @@ pub(crate) enum DIBFmt {
     RGB,
     PNG,
     JPG,
-    Masked(RGBMask, BitsPPx),
+    Masked(Box<[RGBQUAD]>, BitsPPx),
 }
 
 impl DIBFmt {
@@ -63,12 +55,21 @@ impl DIBFmt {
             BI_JPEG => Some(Self::JPG),
             BI_BITFIELDS => Some({
                 Self::Masked(
-                    RGBMask {
-                        red: info.bmiColors[0].rgbRed,
-                        green: info.bmiColors[0].rgbGreen,
-                        blue: info.bmiColors[0].rgbBlue,
-                        reserved: 0,
-                    },
+                    Box::<_>::from(unsafe {
+                        let ptr = &info.bmiColors as *const RGBQUAD;
+                        let len = match info.bmiHeader.biBitCount {
+                            // if we have a palletized payload, suppose there are as many entries
+                            // as are specified for our palette
+                            1 | 4 | 8 => info.bmiHeader.biClrUsed,
+                            // 16- and 32-bpp bitmaps require three words to represent a red,
+                            // green, and blue bitmask respectively
+                            16 | 32 => 3,
+                            // this should never happen, but if it does we'll suppose the rest of
+                            // the color table is zero-length for safety's sake
+                            _ => 0,
+                        };
+                        std::slice::from_raw_parts(ptr, len as usize)
+                    }),
                     BitsPPx::from(info.bmiHeader.biBitCount),
                 )
             }),
@@ -80,14 +81,17 @@ impl DIBFmt {
 pub(crate) struct DIB {
     pub head: BITMAPFILEHEADER,
     pub info: BITMAPINFOHEADER,
+    pub clrs: Option<Box<[RGBQUAD]>>,
     pub data: Box<[u8]>,
 }
 
 impl DIB {
     fn file_header(info: &BITMAPINFOHEADER) -> BITMAPFILEHEADER {
-        let offset =
-            { std::mem::size_of::<BITMAPFILEHEADER>() + std::mem::size_of::<BITMAPINFOHEADER>() }
-                as u32;
+        let offset = {
+            std::mem::size_of::<BITMAPFILEHEADER>()
+                + std::mem::size_of::<BITMAPINFOHEADER>()
+                + (info.biClrUsed as usize) * std::mem::size_of::<RGBQUAD>()
+        } as u32;
         BITMAPFILEHEADER {
             bfType: 0x4D42, // 'BM'
             bfReserved1: 0,
@@ -101,26 +105,33 @@ impl DIB {
         clipboard.get(CF_DIB).map(|gptr| {
             let lock = gptr?;
             let info = lock.as_ref::<BITMAPINFO>();
-            let mut local_info = info.bmiHeader;
-            if let Some(fmt) = DIBFmt::from(&info) {
-                if let DIBFmt::Masked(_, bitsppx) = fmt {
-                    match bitsppx {
-                        BitsPPx::Word | BitsPPx::Triplet => {
-                            // TODO: figure out why this workaround gives us bad scanlines
-                            local_info.biCompression = BI_RGB;
-                        }
-                        _ => {}
+            let fmt = DIBFmt::from(&info);
+            let clrs = fmt
+                .and_then(|fmt| {
+                    if let DIBFmt::Masked(clrs, _) = fmt {
+                        return Some(clrs);
                     }
-                }
-            }
+                    return None;
+                })
+                .and_then(|clrs| {
+                    if clrs.len() == 0 {
+                        return None;
+                    }
+                    return Some(clrs);
+                });
             let head = Self::file_header(&info.bmiHeader);
             let data = Box::<_>::from({
                 let ptr = (&info.bmiHeader as *const BITMAPINFOHEADER).offset(1) as *const u8;
                 let len = info.bmiHeader.biSizeImage as usize;
                 std::slice::from_raw_parts(ptr, len)
             });
-            let info = local_info;
-            Ok(Self { head, info, data })
+            let info = info.bmiHeader;
+            Ok(Self {
+                head,
+                info,
+                clrs,
+                data,
+            })
         })
     }
 
@@ -135,6 +146,13 @@ impl DIB {
             let len = std::mem::size_of::<BITMAPINFOHEADER>();
             std::slice::from_raw_parts(ptr, len)
         })?;
+        if let Some(ref clrs) = self.clrs {
+            ostrm.write({
+                let ptr = clrs.as_ptr() as *const _;
+                let len = std::mem::size_of::<RGBQUAD>() * clrs.len();
+                std::slice::from_raw_parts(ptr, len)
+            })?;
+        }
         ostrm.write(&self.data)?;
         Ok(())
     }
