@@ -1,4 +1,9 @@
 use super::Clipboard;
+use image::bmp::BmpDecoder;
+use image::png::PNGEncoder;
+use image::{DynamicImage, ImageDecoder, ImageFormat};
+use std::io::Cursor;
+use std::io::Read;
 use winapi::um::wingdi::*;
 use winapi::um::winuser::*;
 
@@ -120,7 +125,7 @@ impl DIB {
         })
     }
 
-    pub unsafe fn encode_to<O: std::io::Write>(&self, ostrm: &mut O) -> std::io::Result<()> {
+    pub unsafe fn encode_bmp<O: std::io::Write>(&self, ostrm: &mut O) -> std::io::Result<()> {
         ostrm.write({
             let ptr = <*const _>::cast(&self.head);
             let len = std::mem::size_of::<BITMAPFILEHEADER>();
@@ -139,6 +144,27 @@ impl DIB {
             })?;
         }
         ostrm.write(&self.data)?;
+        Ok(())
+    }
+
+    pub unsafe fn encode_png<O: std::io::Write>(
+        &self,
+        mut ostrm: O,
+    ) -> Result<(), image::error::ImageError> {
+        let img = {
+            let mut scratchpad = Vec::with_capacity({
+                std::mem::size_of::<BITMAPFILEHEADER>()
+                    + std::mem::size_of::<BITMAPINFOHEADER>()
+                    + self
+                        .clrs
+                        .as_ref()
+                        .map_or(0, |clrs| std::mem::size_of::<RGBQUAD>() * clrs.len())
+                    + self.info.biSizeImage as usize
+            });
+            self.encode_bmp(&mut scratchpad)?;
+            image::load_from_memory_with_format(&scratchpad, ImageFormat::Bmp)?
+        };
+        img.write_to(&mut ostrm, ImageFormat::Png)?;
         Ok(())
     }
 }
