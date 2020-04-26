@@ -27,6 +27,23 @@ struct Response<T> {
     data: Option<T>,
 }
 
+trait StrExt {
+    fn popup_err(self);
+}
+
+impl StrExt for &str {
+    fn popup_err(self) {
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                WStr::from(&format!("{:?}", self)).as_mut_ptr(),
+                WStr::from("imgclip: error").as_mut_ptr(),
+                MB_OK | MB_ICONWARNING,
+            );
+        }
+    }
+}
+
 trait ResultExt<T, E> {
     fn popup_err(self) -> Option<T>;
 }
@@ -35,14 +52,7 @@ impl<T, E: std::fmt::Debug> ResultExt<T, E> for Result<T, E> {
     fn popup_err(self) -> Option<T> {
         match self {
             Err(err) => {
-                unsafe {
-                    MessageBoxW(
-                        std::ptr::null_mut(),
-                        WStr::from(&format!("{:?}", err)).as_mut_ptr(),
-                        WStr::from("imgclip: error").as_mut_ptr(),
-                        MB_OK | MB_ICONWARNING,
-                    );
-                }
+                format!("{:?}", err).as_str().popup_err();
                 None
             }
             Ok(rtn) => Some(rtn),
@@ -73,14 +83,21 @@ fn main() -> image::error::ImageResult<()> {
                             format!("Client-ID 2ec689e7311c575"),
                         )
                         .send()
-                        .and_then(|rsp| rsp.json::<Response<Post>>())
-                        .popup_err()
                         .and_then(|rsp| {
-                            if let Some(post) = rsp.data {
-                                clipboard.set(CF_UNICODETEXT, WStr::from(&post.link).as_bytes());
-                                return Some(());
-                            }
-                            None
+                            rsp.error_for_status()
+                                .map(|rsp| rsp.json::<Response<Post>>())
+                        })
+                        .popup_err()
+                        .and_then(|stat| {
+                            stat.and_then(|rsp| {
+                                if let Some(post) = rsp.data {
+                                    clipboard
+                                        .set(CF_UNICODETEXT, WStr::from(&post.link).as_bytes())
+                                        .popup_err();
+                                }
+                                Ok(())
+                            })
+                            .popup_err()
                         });
                 }
             }
