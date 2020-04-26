@@ -1,4 +1,7 @@
 use super::Clipboard;
+use image::bmp::BmpDecoder;
+use image::png::PNGEncoder;
+use std::ops::Deref;
 use winapi::um::wingdi::*;
 use winapi::um::winuser::*;
 
@@ -81,12 +84,107 @@ impl DIB {
         }
     }
 
+    pub unsafe fn rgb_data(&self) -> Option<impl Deref<Target = [[u8; 3]]>> {
+        match self.info.biCompression {
+            // TODO: support palletized payloads (BI_BITFIELDS for depth <= 8)
+            BI_BITFIELDS if self.info.biBitCount == 32 || self.info.biBitCount == 16 => {
+                self.clrs.as_ref().map(|clrs| {
+                    if self.info.biBitCount == 32 {
+                        let n = (self.info.biWidth * self.info.biHeight) as usize;
+                        let data = std::slice::from_raw_parts(self.data.as_ptr() as *const u32, n);
+                        let red = u32::from_le_bytes([
+                            clrs[0].rgbRed,
+                            clrs[0].rgbGreen,
+                            clrs[0].rgbBlue,
+                            0,
+                        ]);
+                        let grn = u32::from_le_bytes([
+                            clrs[1].rgbRed,
+                            clrs[1].rgbGreen,
+                            clrs[1].rgbBlue,
+                            0,
+                        ]);
+                        let blu = u32::from_le_bytes([
+                            clrs[2].rgbRed,
+                            clrs[2].rgbGreen,
+                            clrs[2].rgbBlue,
+                            0,
+                        ]);
+                        data.iter()
+                            .map(|px| {
+                                [
+                                    ((red & px) >> 24) as u8,
+                                    ((grn & px) >> 16) as u8,
+                                    ((blu & px) >> 8) as u8,
+                                ]
+                            })
+                            .collect::<Vec<_>>()
+                            .into_boxed_slice()
+                    } else {
+                        let n = (self.info.biWidth * self.info.biHeight) as usize;
+                        let data = std::slice::from_raw_parts(self.data.as_ptr() as *const u32, n);
+                        let red = u32::from_le_bytes([
+                            clrs[0].rgbRed,
+                            clrs[0].rgbGreen,
+                            clrs[0].rgbBlue,
+                            0,
+                        ]);
+                        let grn = u32::from_le_bytes([
+                            clrs[1].rgbRed,
+                            clrs[1].rgbGreen,
+                            clrs[1].rgbBlue,
+                            0,
+                        ]);
+                        let blu = u32::from_le_bytes([
+                            clrs[2].rgbRed,
+                            clrs[2].rgbGreen,
+                            clrs[2].rgbBlue,
+                            0,
+                        ]);
+                        data.iter()
+                            .map(|px| {
+                                [
+                                    ((red & px) >> 11) as u8,
+                                    ((grn & px) >> 5) as u8,
+                                    (blu & px) as u8,
+                                ]
+                            })
+                            .collect::<Vec<_>>()
+                            .into_boxed_slice()
+                    }
+                })
+            }
+            BI_RGB if self.info.biBitCount == 32 || self.info.biBitCount == 24 => Some({
+                let n = (self.info.biWidth * self.info.biHeight) as usize;
+                if self.info.biBitCount == 32 {
+                    let data = std::slice::from_raw_parts(self.data.as_ptr() as *const u32, n);
+                    let red = 0xff000000;
+                    let grn = 0x00ff0000;
+                    let blu = 0x0000ff00;
+                    data.iter()
+                        .map(|px| {
+                            [
+                                ((red & px) >> 24) as u8,
+                                ((grn & px) >> 16) as u8,
+                                ((blu & px) >> 8) as u8,
+                            ]
+                        })
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice()
+                } else {
+                    let data = std::slice::from_raw_parts(<*const _>::cast(self.data.as_ptr()), n);
+                    Box::<_>::from(data)
+                }
+            }),
+            _ => None,
+        }
+    }
+
     pub unsafe fn unclip(clipboard: &mut Clipboard) -> Option<std::io::Result<Self>> {
         clipboard.get(CF_DIB).map(|gptr| {
             let lock = gptr?;
             let info = lock.as_ref::<BITMAPINFO>();
-            let fmt = DIBFmt::from(&info);
-            let clrs = fmt
+            let clrs = DIBFmt::from(&info)
                 .and_then(|fmt| match fmt {
                     DIBFmt::Masked(clrs, _) => Some(Box::<_>::from(clrs.as_ref())),
                     DIBFmt::RGB(clrs, _) => Some(clrs),
@@ -120,7 +218,7 @@ impl DIB {
         })
     }
 
-    pub unsafe fn encode_to<O: std::io::Write>(&self, ostrm: &mut O) -> std::io::Result<()> {
+    pub unsafe fn encode_bmp<O: std::io::Write>(&self, ostrm: &mut O) -> std::io::Result<()> {
         ostrm.write({
             let ptr = <*const _>::cast(&self.head);
             let len = std::mem::size_of::<BITMAPFILEHEADER>();
@@ -140,5 +238,25 @@ impl DIB {
         }
         ostrm.write(&self.data)?;
         Ok(())
+    }
+
+    pub unsafe fn encode_png<O: std::io::Write>(
+        &self,
+        ostrm: O,
+    ) -> Option<Result<(), png::EncodingError>> {
+        self.rgb_data().map(|payload| {
+            let mut enc = Encoder::new(ostrm, self.info.biWidth as u32, self.info.biHeight as u32);
+            enc.set_color(ColorType::RGB);
+            enc.set_depth(BitDepth::Eight);
+            let mut ostrm = enc.write_header()?;
+            let istrm = {
+                let ptr = payload.as_ptr() as *const _ as *const u8;
+                let slc = std::slice::from_raw_parts(ptr, payload.len() * 3);
+                println!("{:?}", slc[..6]);
+                slc
+            };
+            ostrm.write_image_data(istrm)?;
+            Ok(())
+        })
     }
 }

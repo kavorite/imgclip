@@ -26,8 +26,12 @@ fn main() -> std::io::Result<()> {
                 let mut clipboard = Clipboard::open()?;
                 if let Some(result) = DIB::unclip(&mut clipboard) {
                     let dib = result?;
-                    let mut ostrm = File::create("clip.bmp")?;
-                    dib.encode_to(&mut ostrm)?;
+                    let mut ostrm = File::create("clip.png")?;
+                    if let Some(err) = dib.encode_png(&mut ostrm) {
+                        err?;
+                    } else {
+                        eprintln!("format not supported");
+                    }
                 }
             }
             listener.poll()?;
