@@ -33,7 +33,6 @@ impl WStr {
     }
 }
 
-#[derive(Clone)]
 pub(crate) struct GPtr {
     hdl: HANDLE,
     ptr: *mut std::ffi::c_void,
@@ -137,7 +136,7 @@ impl Clipboard {
         Ok(())
     }
 
-    pub unsafe fn get(&self, fmt: u32) -> Option<std::io::Result<GPtr>> {
+    pub unsafe fn get(&mut self, fmt: u32) -> Option<std::io::Result<GPtr>> {
         if !self.has_fmt(fmt) {
             return None;
         }
