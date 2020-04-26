@@ -25,18 +25,6 @@ impl BitsPPx {
             _ => Self::Other(n),
         }
     }
-
-    pub fn n(self) -> u16 {
-        match self {
-            Self::Binary => 1,
-            Self::HalfByte => 4,
-            Self::Byte => 8,
-            Self::Short => 16,
-            Self::Triplet => 24,
-            Self::Word => 32,
-            Self::Other(n) => n,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -117,7 +105,8 @@ impl DIB {
             };
             let head = Self::file_header(&info.bmiHeader, colorc);
             let data = Box::<_>::from({
-                let ptr = (&info.bmiHeader as *const BITMAPINFOHEADER).offset(1) as *const u8;
+                let bmi_end = (&info.bmiHeader as *const BITMAPINFOHEADER).offset(1) as *const u8;
+                let ptr = bmi_end.offset((colorc * std::mem::size_of::<RGBQUAD>()) as isize);
                 let len = info.bmiHeader.biSizeImage as usize;
                 std::slice::from_raw_parts(ptr, len)
             });
