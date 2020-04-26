@@ -1,4 +1,6 @@
 use crossbeam_channel::{Receiver, Sender};
+use std::ops::Deref;
+use std::ops::DerefMut;
 use std::os::windows::ffi::OsStrExt;
 use std::time::Instant;
 use winapi::shared::minwindef::*;
@@ -10,7 +12,7 @@ use winapi::um::libloaderapi::GetModuleHandleW;
 use winapi::um::winbase::*;
 use winapi::um::winuser::*;
 
-struct WStr {
+pub(crate) struct WStr {
     data: Vec<u16>,
 }
 
@@ -24,12 +26,42 @@ impl WStr {
         }
     }
 
+    pub fn as_bytes(&self) -> &[u8] {
+        unsafe {
+            let ptr = self.data.as_ptr() as *const _;
+            let len = self.data.len() * 2;
+            std::slice::from_raw_parts(ptr, len)
+        }
+    }
+
     pub fn as_slice(&self) -> &[u16] {
         unsafe {
-            let start = self.data.as_ptr();
+            let ptr = self.data.as_ptr();
             let len = self.data.len();
-            std::slice::from_raw_parts(start, len)
+            std::slice::from_raw_parts(ptr, len)
         }
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [u16] {
+        unsafe {
+            let ptr = self.data.as_mut_ptr();
+            let len = self.data.len();
+            std::slice::from_raw_parts_mut(ptr, len)
+        }
+    }
+}
+
+impl Deref for WStr {
+    type Target = [u16];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl DerefMut for WStr {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.as_mut_slice()
     }
 }
 

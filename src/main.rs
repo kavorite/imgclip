@@ -3,16 +3,52 @@ extern crate lazy_static;
 extern crate crossbeam_channel;
 extern crate image;
 extern crate reqwest;
+extern crate serde_derive;
 extern crate winapi;
-extern crate winrt_notification;
 
 mod dib;
 mod pin;
 
 use dib::DIB;
 use pin::*;
-use std::fs::File;
+use serde_derive::Deserialize;
 use winapi::um::winuser::*;
+
+#[derive(Deserialize)]
+struct Post {
+    link: String,
+    deletehash: String,
+}
+
+#[derive(Deserialize)]
+struct Response<T> {
+    success: bool,
+    status: i32,
+    data: Option<T>,
+}
+
+trait ResultExt<T, E> {
+    fn popup_err(self) -> Option<T>;
+}
+
+impl<T, E: std::fmt::Debug> ResultExt<T, E> for Result<T, E> {
+    fn popup_err(self) -> Option<T> {
+        match self {
+            Err(err) => {
+                unsafe {
+                    MessageBoxW(
+                        std::ptr::null_mut(),
+                        WStr::from(&format!("{:?}", err)).as_mut_ptr(),
+                        WStr::from("imgclip: error").as_mut_ptr(),
+                        MB_OK | MB_ICONWARNING,
+                    );
+                }
+                None
+            }
+            Ok(rtn) => Some(rtn),
+        }
+    }
+}
 
 fn main() -> image::error::ImageResult<()> {
     let listener = unsafe { WinMsgSink::open() }?;
@@ -26,8 +62,26 @@ fn main() -> image::error::ImageResult<()> {
                 let mut clipboard = Clipboard::open()?;
                 if let Some(result) = DIB::unclip(&mut clipboard) {
                     let dib = result?;
-                    let mut ostrm = File::create("clip.png")?;
-                    dib.encode_png(&mut ostrm)?;
+                    let mut body = Vec::new();
+                    dib.encode_png(&mut body)?;
+                    let http = reqwest::blocking::Client::new();
+                    http.post("https://api.imgur.com/3/upload")
+                        .body(body)
+                        .header(reqwest::header::CONTENT_TYPE, "image/png")
+                        .header(
+                            reqwest::header::AUTHORIZATION,
+                            format!("Client-ID 2ec689e7311c575"),
+                        )
+                        .send()
+                        .and_then(|rsp| rsp.json::<Response<Post>>())
+                        .popup_err()
+                        .and_then(|rsp| {
+                            if let Some(post) = rsp.data {
+                                clipboard.set(CF_UNICODETEXT, WStr::from(&post.link).as_bytes());
+                                return Some(());
+                            }
+                            None
+                        });
                 }
             }
             listener.poll()?;
